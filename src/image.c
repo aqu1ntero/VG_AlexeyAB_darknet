@@ -20,6 +20,16 @@
 #include "stb_image_write.h"
 #endif
 
+//---- Luis Felipe add ----
+#include <b64.h>
+
+struct ImageWriteData {
+    uint64_t pos;
+    uint64_t size;
+    uint8_t *data;
+};
+//---- Luis Felipe end ----
+
 extern int check_mistakes;
 //int windows = 0;
 
@@ -754,6 +764,102 @@ void save_image(image im, const char *name)
 {
     save_image_options(im, name, JPG, 80);
 }
+
+//---- Luis Felipe add ----
+void stbi_write_func_base64(void *context, void *data, int size)
+{
+    struct ImageWriteData *imageWriteData = (struct ImageWriteData *) (context);
+    int i;
+
+    //printf("IMAGE POS: %lld SIZE: %lld COPY: %d\n", imageWriteData->pos, imageWriteData->size, size);
+
+    if (imageWriteData->pos + size >= imageWriteData->size) {
+        imageWriteData->data = realloc(imageWriteData->data, sizeof(char) * (imageWriteData->pos + size + 1));
+        imageWriteData->size = imageWriteData->pos + size + 1;
+    }
+
+    for (i = 0; i < size; ++i) {
+        imageWriteData->data[i + imageWriteData->pos] = ((uint8_t *) (data))[i];
+    }
+
+    imageWriteData->pos += size;
+}
+
+void save_image_curl(image im, uint8_t **curl_data, uint64_t *size)
+{
+    struct ImageWriteData *imageWriteData = (struct ImageWriteData *) malloc(sizeof(struct ImageWriteData));
+
+    imageWriteData->pos = 0;
+    imageWriteData->size = 1024 * 64;
+    imageWriteData->data = (uint8_t *) (malloc(sizeof(uint8_t) * 1024 * 64));
+
+    unsigned char* data = (unsigned char*)xcalloc(im.w * im.h * im.c, sizeof(unsigned char));
+    int i, k;
+    for (k = 0; k < im.c; ++k) {
+        for (i = 0; i < im.w*im.h; ++i) {
+            data[i*im.c + k] = (unsigned char)(255 * im.data[i + k*im.w*im.h]);
+        }
+    }
+
+    stbi_write_jpg_to_func(stbi_write_func_base64, imageWriteData, im.w, im.h, im.c, data, 80);
+
+    imageWriteData->data[imageWriteData->pos + 1] = '\0';
+
+    *curl_data = (uint8_t *)(malloc(sizeof(uint8_t) * imageWriteData->pos));
+    *size = imageWriteData->pos;
+
+    memcpy(*curl_data, imageWriteData->data, *size);
+
+    free(imageWriteData->data);
+    free(imageWriteData);
+}
+
+void save_image_base64(image im, char **b64)
+{
+    struct ImageWriteData *imageWriteData = (struct ImageWriteData *) malloc(sizeof(struct ImageWriteData));
+
+    imageWriteData->pos = 0;
+    imageWriteData->size = 1024 * 64;
+    imageWriteData->data = (uint8_t *) (malloc(sizeof(uint8_t) * 1024 * 64));
+
+    unsigned char* data = (unsigned char*)xcalloc(im.w * im.h * im.c, sizeof(unsigned char));
+    int i, k;
+    for (k = 0; k < im.c; ++k) {
+        for (i = 0; i < im.w*im.h; ++i) {
+            data[i*im.c + k] = (unsigned char)(255 * im.data[i + k*im.w*im.h]);
+        }
+    }
+
+    stbi_write_jpg_to_func(stbi_write_func_base64, imageWriteData, im.w, im.h, im.c, data, 80);
+
+    imageWriteData->data[imageWriteData->pos + 1] = '\0';
+    char *b64_raw = b64_encode(imageWriteData->data, imageWriteData->pos);
+
+    uint64_t pos = 0;
+    uint64_t size = 64 * 1024;
+    *b64 = (char *) malloc(sizeof(char) * size);
+
+    while (1) {
+        if (pos == size) {
+            size += 1024;
+            *b64 = realloc(*b64, sizeof(char) * size);
+        }
+
+        if (b64_raw[pos] == '\0') {
+            break;
+        } else {
+            char tmp = b64_raw[pos];
+            (*b64)[pos] = tmp;
+        }
+
+        ++pos;
+    }
+
+    free(imageWriteData->data);
+    free(imageWriteData);
+    free(b64_raw);
+}
+//---- Luis Felipe end ----
 
 void save_image_jpg(image p, const char *name)
 {

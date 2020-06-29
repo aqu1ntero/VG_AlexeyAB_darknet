@@ -7,6 +7,12 @@
 #include <stdio.h>
 #include <string.h>
 // ---- vincent add end-----
+// ---- Luis Felipe add -----
+#include <sys/inotify.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <curl/curl.h>
+// ---- Luis Felipe end -----
 #include <stdlib.h>
 #include "darknet.h"
 #include "network.h"
@@ -27,6 +33,295 @@ typedef __compar_fn_t comparison_fn_t;
 #endif
 
 #include "http_stream.h"
+
+// ---- Luis Felipe add -----
+#define EVENT_SIZE  (sizeof(struct inotify_event))
+#define BUF_LEN     (1024 * (EVENT_SIZE + 16))
+#define BUF_DYNAMIC_BATCH_SIZE 100
+
+typedef struct {
+    char* buf[BUF_DYNAMIC_BATCH_SIZE];
+    size_t len;
+    pthread_mutex_t mutex;
+    pthread_cond_t can_produce;
+    pthread_cond_t can_consume;
+
+    char *datacfg;
+    char *cfgfile;
+    char *weightfile;
+    int letter_box;
+    float thresh;
+    float hier_thresh;
+    int ext_output;
+
+    char *api_uri;
+    char *api_token;
+} buffer_dynamic_batch_t;
+
+typedef struct {
+    uint8_t *data;
+    uint64_t size;
+    uint64_t pos;
+} curl_upload_data_t;
+
+static size_t read_callback(void *ptr, size_t size, size_t nmemb, void *stream)
+{
+    size_t retcode;
+    curl_off_t nread;
+    uint64_t i;
+    curl_upload_data_t *curl_upload_data = (curl_upload_data_t *) stream;
+
+    if (curl_upload_data->pos >= curl_upload_data->size) {
+        return 0;
+    } else {
+        for (i = 0; i < size * nmemb && curl_upload_data->pos + i < curl_upload_data->size; ++i) {
+            ((uint8_t *)ptr)[i] = curl_upload_data->data[curl_upload_data->pos + i];
+        }
+
+        curl_upload_data->pos += i;
+        
+        return i;
+    }
+}
+
+void* dynamic_batch_consumer(void *arg) {
+    buffer_dynamic_batch_t *buffer = (buffer_dynamic_batch_t*)arg;
+
+    const float nms = .45;
+    const float out_thresh = .005;
+    unsigned long long int counter = 0;
+    double max_prob = -1;
+    char *class_name = NULL;
+    char prob_string[24];
+
+    int i, j;
+
+    list *options = read_data_cfg(buffer->datacfg);
+    char *name_list = option_find_str(options, "names", "data/names.list");
+    int names_size = 0;
+    char **names = get_labels_custom(name_list, &names_size);
+
+    image **alphabet = load_alphabet();
+    network net = parse_network_cfg_custom(buffer->cfgfile, 1, 1);
+
+    CURL *curl;
+    CURLcode res;
+    FILE * hd_src;
+    struct stat file_info;
+    struct curl_httppost *formpost = NULL;
+    struct curl_httppost *lastptr = NULL;
+
+    if (buffer->weightfile) {
+        load_weights(&net, buffer->weightfile);
+    }
+
+    fuse_conv_batchnorm(net);
+    calculate_binary_weights(net);
+    if (net.layers[net.n - 1].classes != names_size) {
+        printf(" Error: in the file %s number of names %d that isn't equal to classes=%d in the file %s \n",
+            name_list, names_size, net.layers[net.n - 1].classes, buffer->cfgfile);
+
+        exit(-1);
+    }
+
+    srand(2222222);
+
+    // CURL INIT WORK
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl = curl_easy_init();
+
+    if(curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, buffer->api_uri);
+
+        struct curl_slist* headers = NULL;
+
+        const char *auth_base = "Authorization: Token ";
+        
+        char *auth = (char*)malloc(strlen(auth_base) + strlen(buffer->api_token) + 1); // +1 for the null-terminator
+        
+        strcpy(auth, auth_base);
+        strcat(auth, buffer->api_token);
+
+        headers = curl_slist_append(headers, auth);
+
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    } else {
+        printf("[E] Curl cant init");
+        exit(-1);
+    }
+    // CURL INIT END
+
+    while(1) {
+        char *new_file = NULL;
+
+        pthread_mutex_lock(&buffer->mutex);
+
+        if(buffer->len == 0) { // empty
+            // wait for new items to be appended to the buffer
+            pthread_cond_wait(&buffer->can_consume, &buffer->mutex);
+        }
+
+        // grab data
+        --buffer->len;
+        new_file = buffer->buf[buffer->len];
+        printf("Consumed: %s\n", new_file);
+
+        // signal the fact that new items may be produced
+        pthread_cond_signal(&buffer->can_produce);
+        pthread_mutex_unlock(&buffer->mutex);
+
+        // Start object detection
+
+        image im = load_image(new_file, 0, 0, net.c);
+        image sized;
+
+        if (buffer->letter_box) {
+            sized = letterbox_image(im, net.w, net.h);
+        } else {
+            sized = resize_image(im, net.w, net.h);
+        }
+
+        layer l = net.layers[net.n - 1];
+
+        float *X = sized.data;
+
+        double time = get_time_point();
+        network_predict(net, X);
+        printf("%s: Predicted in %lf milli-seconds.\n", new_file, ((double)get_time_point() - time) / 1000);
+
+        int nboxes = 0;
+        detection *dets = get_network_boxes(&net, im.w, im.h, buffer->thresh, buffer->hier_thresh, 0, 1, &nboxes, buffer->letter_box);
+
+        if (nms) {
+            if (l.nms_kind == DEFAULT_NMS) {
+                do_nms_sort(dets, nboxes, l.classes, nms);
+            } else {
+                diounms_sort(dets, nboxes, l.classes, nms, l.nms_kind, l.beta_nms);
+            }
+        }
+
+        draw_detections_v3(im, dets, nboxes, buffer->thresh, names, alphabet, l.classes, buffer->ext_output);
+
+        curl_upload_data_t curl_upload_data;
+
+        curl_upload_data.pos = 0;
+
+        save_image_curl(im, &curl_upload_data.data, &curl_upload_data.size);
+
+        curl_formadd(&formpost,
+            &lastptr,
+            CURLFORM_COPYNAME, "cache-control:",
+            CURLFORM_COPYCONTENTS, "no-cache",
+            CURLFORM_END
+        );
+
+        curl_formadd(&formpost,
+            &lastptr,
+            CURLFORM_COPYNAME, "content-type:",
+            CURLFORM_COPYCONTENTS, "multipart/form-data",
+            CURLFORM_END
+        );
+
+        curl_formadd(&formpost, &lastptr,
+            CURLFORM_COPYNAME, "image_file",
+            CURLFORM_BUFFER, "data",
+            CURLFORM_BUFFERPTR, curl_upload_data.data,
+            CURLFORM_BUFFERLENGTH, curl_upload_data.size,
+            CURLFORM_END
+        );
+
+        curl_formadd(&formpost, &lastptr,
+            CURLFORM_COPYNAME, "camera",
+            CURLFORM_COPYCONTENTS, "1",
+            CURLFORM_END
+        );
+
+        int class_id = -1;
+        for (i = 0; i < nboxes; ++i) {
+            for (j = 0; j < l.classes; ++j) {
+                if (dets[i].prob[j] > max_prob)
+                {
+                    max_prob = dets[i].prob[j];
+                    class_name = names[j];
+                }
+            }
+        }
+
+        if (max_prob > 0) {
+
+            curl_formadd(&formpost, &lastptr,
+                CURLFORM_COPYNAME, "object_info",
+                CURLFORM_COPYCONTENTS, class_name,
+                CURLFORM_END
+            );
+
+            sprintf(prob_string, "%d", (int)(max_prob * 100));
+
+            curl_formadd(&formpost, &lastptr,
+                CURLFORM_COPYNAME, "probability",
+                CURLFORM_COPYCONTENTS, prob_string,
+                CURLFORM_END
+            );
+
+            curl_easy_setopt(curl, CURLOPT_HTTPPOST, formpost);
+
+            res = curl_easy_perform(curl);
+
+            max_prob = -1;
+            class_name = NULL;
+        }
+
+        curl_formfree(formpost);
+
+        formpost = NULL;
+        lastptr = NULL;
+
+        /* Check for errors */ 
+        if(res != CURLE_OK) 
+        {
+            fprintf(stderr, "[W] Cant Upload image: %s\n", curl_easy_strerror(res));
+        } else {
+            printf("\nEvent Uploaded\n");
+        }
+
+        free(curl_upload_data.data);
+
+        /*char *json = vincent_detection_to_json(im, dets, nboxes, l.classes, names, counter++, new_file);
+        printf("JSON OUT: %s\n", json);
+        free(json);*/
+
+        free_detections(dets, nboxes);
+        free_image(im);
+        free_image(sized);
+
+        free(new_file);
+    }
+
+    // free memory
+    free_ptrs((void**)names, net.layers[net.n - 1].classes);
+    free_list_contents_kvp(options);
+    free_list(options);
+
+    const int nsize = 8;
+    for (j = 0; j < nsize; ++j) {
+        for (i = 32; i < 127; ++i) {
+            free_image(alphabet[j][i]);
+        }
+        free(alphabet[j]);
+    }
+    free(alphabet);
+
+    free_network(net);
+
+    curl_easy_cleanup(curl);
+    curl_global_cleanup();
+
+    // never reached
+    return NULL;
+}
+
+// ---- Luis Felipe end -----
 
 int check_mistakes = 0;
 
@@ -1767,6 +2062,93 @@ void batch_detector(char *datacfg, char *cfgfile, char *weightfile, char *filena
 // -------- Vincent: finish function for batch images procession-----------
 // vincent.gong7@gmail.com
 
+// -------- Luis Felipe: Start function based on vincent batch_detector for dynamic
+void dynamic_batch_detector(char *datacfg, char *cfgfile, char *weightfile, float thresh,
+    float hier_thresh, int dont_show, int save_labels, int letter_box, char *in_folder, int ext_output,
+    char *api_uri, char *api_token)
+{
+    buffer_dynamic_batch_t dynamic_buffer = {
+        .len = 0,
+        .mutex = PTHREAD_MUTEX_INITIALIZER,
+        .can_produce = PTHREAD_COND_INITIALIZER,
+        .can_consume = PTHREAD_COND_INITIALIZER,
+
+        .datacfg = datacfg,
+        .cfgfile = cfgfile,
+        .weightfile = weightfile,
+        .letter_box = letter_box,
+        .thresh = thresh,
+        .hier_thresh = hier_thresh,
+        .ext_output = ext_output,
+        .api_uri = api_uri,
+        .api_token = api_token
+    };
+    
+    if(in_folder){
+        printf("folder input=%s\n", in_folder);
+
+        pthread_t cons;
+
+        pthread_create(&cons, NULL, dynamic_batch_consumer, (void*)&dynamic_buffer);
+
+        int length, i = 0;
+        int fd;
+        int wd;
+        char buffer_event[BUF_LEN];
+
+        fd = inotify_init();
+
+        if (fd < 0) {
+            perror("inotify_init");
+        }
+
+        wd = inotify_add_watch(fd, in_folder, IN_CLOSE_WRITE);
+
+        while (1) {
+            i = 0;
+
+            length = read(fd, buffer_event, BUF_LEN);
+
+            if (length < 0) {
+                perror("read");
+            }
+
+            while (i < length) {
+                struct inotify_event *event =
+                    (struct inotify_event *) &buffer_event[i];
+                if (event->len) {
+                    if (event->mask & IN_CLOSE_WRITE) {
+                        pthread_mutex_lock(&dynamic_buffer.mutex);
+
+                        if(dynamic_buffer.len == BUF_DYNAMIC_BATCH_SIZE) { // full
+                            printf("[W] Queue of processing work is full, some events can be lost. Try upgrade queue size or hardware\n");
+                            pthread_cond_wait(&dynamic_buffer.can_produce, &dynamic_buffer.mutex);
+                        }
+
+                        printf("The file %s was copied.\n", event->name);
+
+                        char *file_name_event = concat(in_folder, event->name);
+
+                        dynamic_buffer.buf[dynamic_buffer.len] = file_name_event;
+                        ++dynamic_buffer.len;
+
+                        pthread_cond_signal(&dynamic_buffer.can_consume);
+                        pthread_mutex_unlock(&dynamic_buffer.mutex);
+                    } else {
+                        printf("Ignoring inotify event");
+                    }
+                }
+                i += EVENT_SIZE + event->len;
+            }
+        }
+
+        (void) inotify_rm_watch(fd, wd);
+        (void) close(fd);
+    } //if(in_folder)
+    
+}
+// -------- Luis Felipe: Finish function based on vincent batch_detector for dynamic
+// ldominguezvega@gmail.com
 
 void test_detector(char *datacfg, char *cfgfile, char *weightfile, char *filename, float thresh,
     float hier_thresh, int dont_show, int ext_output, int save_labels, char *outfile, int letter_box, int benchmark_layers)
@@ -2124,6 +2506,10 @@ void run_detector(int argc, char **argv)
     int ext_output = find_arg(argc, argv, "-ext_output");
     int save_labels = find_arg(argc, argv, "-save_labels");
     char* chart_path = find_char_arg(argc, argv, "-chart", 0);
+    // ---- Luis Felipe add ----
+    char* api_uri = find_char_arg(argc, argv, "-api_uri", 0);
+    char* api_token = find_char_arg(argc, argv, "-api_token", 0);
+    // ---- Luis Felipe end ----
     if (argc < 4) {
         fprintf(stderr, "usage: %s %s [train/test/valid/demo/map] [data] [cfg] [weights (optional)]\n", argv[0], argv[1]);
         return;
@@ -2167,6 +2553,10 @@ void run_detector(int argc, char **argv)
     if (0 == strcmp(argv[2], "batch")) batch_detector(datacfg, cfg, weights, filename, thresh, hier_thresh, dont_show, ext_output, save_labels, outfile, letter_box, benchmark_layers, in_folder, out_folder);
     else
     //------ vincent end --------
+    //------ luis felipe start -------
+    if (0 == strcmp(argv[2], "dynamic_batch")) dynamic_batch_detector(datacfg, cfg, weights, thresh, hier_thresh, dont_show, save_labels, letter_box, in_folder, ext_output, api_uri, api_token);
+    else
+    //------ luis felipe end
     if (0 == strcmp(argv[2], "test")) test_detector(datacfg, cfg, weights, filename, thresh, hier_thresh, dont_show, ext_output, save_labels, outfile, letter_box, benchmark_layers);
     else if (0 == strcmp(argv[2], "train")) train_detector(datacfg, cfg, weights, gpus, ngpus, clear, dont_show, calc_map, mjpeg_port, show_imgs, benchmark_layers, chart_path);
     else if (0 == strcmp(argv[2], "valid")) validate_detector(datacfg, cfg, weights, outfile);
