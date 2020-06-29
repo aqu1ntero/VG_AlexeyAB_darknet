@@ -295,6 +295,8 @@ void* dynamic_batch_consumer(void *arg) {
         free_image(im);
         free_image(sized);
 
+        remove(new_file);
+
         free(new_file);
     }
 
