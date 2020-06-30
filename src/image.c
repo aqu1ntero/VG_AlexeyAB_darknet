@@ -787,11 +787,11 @@ void stbi_write_func_base64(void *context, void *data, int size)
 
 void save_image_curl(image im, uint8_t **curl_data, uint64_t *size)
 {
-    struct ImageWriteData *imageWriteData = (struct ImageWriteData *) malloc(sizeof(struct ImageWriteData));
-
-    imageWriteData->pos = 0;
-    imageWriteData->size = 1024 * 64;
-    imageWriteData->data = (uint8_t *) (malloc(sizeof(uint8_t) * 1024 * 64));
+    struct ImageWriteData imageWriteData {
+        .pos = 0,
+        .size = 1,
+        .data = (uint8_t *) malloc(sizeof(uint8_t))
+    }
 
     unsigned char* data = (unsigned char*)xcalloc(im.w * im.h * im.c, sizeof(unsigned char));
     int i, k;
@@ -801,16 +801,13 @@ void save_image_curl(image im, uint8_t **curl_data, uint64_t *size)
         }
     }
 
-    stbi_write_jpg_to_func(stbi_write_func_base64, imageWriteData, im.w, im.h, im.c, data, 80);
+    stbi_write_jpg_to_func(stbi_write_func_base64, &imageWriteData, im.w, im.h, im.c, data, 80);
 
     imageWriteData->data[imageWriteData->pos + 1] = '\0';
 
-    *curl_data = (uint8_t *)(malloc(sizeof(uint8_t) * imageWriteData->pos));
+    *curl_data = imageWriteData->data;
     *size = imageWriteData->pos;
 
-    memcpy(*curl_data, imageWriteData->data, *size);
-
-    free(imageWriteData->data);
     free(imageWriteData);
 }
 

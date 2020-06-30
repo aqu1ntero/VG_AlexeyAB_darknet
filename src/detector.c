@@ -126,36 +126,37 @@ void* dynamic_batch_consumer(void *arg) {
 
     srand(2222222);
 
-    // CURL INIT WORK
     curl_global_init(CURL_GLOBAL_ALL);
-    curl = curl_easy_init();
-
-    if(curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, buffer->api_uri);
-
-        struct curl_slist* headers = NULL;
-
-        const char *auth_base = "Authorization: Token ";
-        
-        char *auth = (char*)malloc(strlen(auth_base) + strlen(buffer->api_token) + 1); // +1 for the null-terminator
-        
-        strcpy(auth, auth_base);
-        strcat(auth, buffer->api_token);
-
-        headers = curl_slist_append(headers, auth);
-
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-    } else {
-        printf("[E] Curl cant init");
-        exit(-1);
-    }
-    // CURL INIT END
 
     pthread_cond_signal(&buffer->can_produce);
 
     while(1) {
         char *new_file = NULL;
+
+        // CURL INIT WORK
+        curl = curl_easy_init();
+
+        if(curl) {
+            curl_easy_setopt(curl, CURLOPT_URL, buffer->api_uri);
+
+            struct curl_slist* headers = NULL;
+
+            const char *auth_base = "Authorization: Token ";
+            
+            char *auth = (char*)malloc(strlen(auth_base) + strlen(buffer->api_token) + 1); // +1 for the null-terminator
+            
+            strcpy(auth, auth_base);
+            strcat(auth, buffer->api_token);
+
+            headers = curl_slist_append(headers, auth);
+
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+        } else {
+            printf("[E] Curl cant init");
+            exit(-1);
+        }
+        // CURL INIT END
 
         pthread_mutex_lock(&buffer->mutex);
 
@@ -279,6 +280,7 @@ void* dynamic_batch_consumer(void *arg) {
         }
 
         curl_formfree(formpost);
+        curl_easy_cleanup(curl);
 
         formpost = NULL;
         lastptr = NULL;
@@ -292,10 +294,6 @@ void* dynamic_batch_consumer(void *arg) {
         }
 
         free(curl_upload_data.data);
-
-        /*char *json = vincent_detection_to_json(im, dets, nboxes, l.classes, names, counter++, new_file);
-        printf("JSON OUT: %s\n", json);
-        free(json);*/
 
         free_detections(dets, nboxes);
         free_image(im);
@@ -322,7 +320,6 @@ void* dynamic_batch_consumer(void *arg) {
 
     free_network(net);
 
-    curl_easy_cleanup(curl);
     curl_global_cleanup();
 
     // never reached
