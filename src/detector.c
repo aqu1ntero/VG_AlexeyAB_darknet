@@ -127,6 +127,12 @@ void* dynamic_batch_consumer(void *arg) {
     srand(2222222);
 
     curl_global_init(CURL_GLOBAL_ALL);
+    curl = curl_easy_init();
+
+    if(!curl) {
+        printf("[E] Curl cant init");
+        exit(-1);
+    }
 
     const char *auth_base = "Authorization: Token ";
 
@@ -139,22 +145,12 @@ void* dynamic_batch_consumer(void *arg) {
 
     headers = curl_slist_append(headers, auth);
 
+    curl_easy_setopt(curl, CURLOPT_URL, buffer->api_uri);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
     pthread_cond_signal(&buffer->can_produce);
 
     while(1) {
-        // CURL INIT WORK
-        curl = curl_easy_init();
-
-        if(!curl) {
-            printf("[E] Curl cant init");
-            exit(-1);
-        }
-
-        curl_easy_setopt(curl, CURLOPT_URL, buffer->api_uri);
-
-        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-        // CURL INIT END
-
         pthread_mutex_lock(&buffer->mutex);
 
         if(buffer->len == 0) { // empty
@@ -164,6 +160,7 @@ void* dynamic_batch_consumer(void *arg) {
 
         // grab data
         --buffer->len;
+
         char *in_file = buffer->buf[buffer->len];
 
         char *new_file = (char *) malloc(sizeof(char) * (strlen(in_file) + 1));
