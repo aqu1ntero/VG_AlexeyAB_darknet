@@ -771,11 +771,14 @@ void stbi_write_func_base64(void *context, void *data, int size)
     struct ImageWriteData *imageWriteData = (struct ImageWriteData *) (context);
     int i;
 
-    //printf("IMAGE POS: %lld SIZE: %lld COPY: %d\n", imageWriteData->pos, imageWriteData->size, size);
-
+    
     if (imageWriteData->pos + size >= imageWriteData->size) {
-        imageWriteData->data = realloc(imageWriteData->data, sizeof(char) * (imageWriteData->pos + size + 1));
-        imageWriteData->size = imageWriteData->pos + size + 1;
+        uint8_t *new_data = (uint8_t *) malloc(sizeof(uint8_t) * (imageWriteData->pos + size + 1024));
+
+        memset(new_data, 0, imageWriteData->pos + size + 1024);
+        memcpy(new_data, imageWriteData->data, imageWriteData->size);
+
+        imageWriteData->size = imageWriteData->pos + size + 1024;
     }
 
     for (i = 0; i < size; ++i) {
@@ -803,7 +806,7 @@ void save_image_curl(image im, uint8_t **curl_data, uint64_t *size)
 
     stbi_write_jpg_to_func(stbi_write_func_base64, &imageWriteData, im.w, im.h, im.c, data, 80);
 
-    imageWriteData.data[imageWriteData.pos + 1] = '\0';
+    free(data);
 
     *curl_data = imageWriteData.data;
     *size = imageWriteData.pos;

@@ -210,11 +210,10 @@ void* dynamic_batch_consumer(void *arg) {
 
         draw_detections_v3(im, dets, nboxes, buffer->thresh, names, alphabet, l.classes, buffer->ext_output);
 
-        curl_upload_data_t curl_upload_data;
+        uint8_t *image_data = NULL;
+        uint64_t size = 0;
 
-        curl_upload_data.pos = 0;
-
-        save_image_curl(im, &curl_upload_data.data, &curl_upload_data.size);
+        save_image_curl(im, &image_data, &size);
 
         curl_formadd(&formpost,
             &lastptr,
@@ -233,8 +232,8 @@ void* dynamic_batch_consumer(void *arg) {
         curl_formadd(&formpost, &lastptr,
             CURLFORM_COPYNAME, "image_file",
             CURLFORM_BUFFER, "data",
-            CURLFORM_BUFFERPTR, curl_upload_data.data,
-            CURLFORM_BUFFERLENGTH, curl_upload_data.size,
+            CURLFORM_BUFFERPTR, image_data,
+            CURLFORM_BUFFERLENGTH, size,
             CURLFORM_END
         );
 
@@ -293,7 +292,7 @@ void* dynamic_batch_consumer(void *arg) {
             printf("\nEvent Uploaded\n");
         }
 
-        free(curl_upload_data.data);
+        free(image_data);
 
         free_detections(dets, nboxes);
         free_image(im);
