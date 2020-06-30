@@ -280,7 +280,6 @@ void* dynamic_batch_consumer(void *arg) {
         }
 
         curl_formfree(formpost);
-        curl_easy_cleanup(curl);
 
         formpost = NULL;
         lastptr = NULL;
@@ -302,6 +301,8 @@ void* dynamic_batch_consumer(void *arg) {
         remove(new_file);
         free(new_file);
     }
+
+    curl_easy_cleanup(curl);
 
     // free memory
     free_ptrs((void**)names, net.layers[net.n - 1].classes);

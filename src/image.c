@@ -778,7 +778,12 @@ void stbi_write_func_base64(void *context, void *data, int size)
         memset(new_data, 0, imageWriteData->pos + size + 1024);
         memcpy(new_data, imageWriteData->data, imageWriteData->size);
 
+        uint8_t *old_data = imageWriteData->data;
+
         imageWriteData->size = imageWriteData->pos + size + 1024;
+        imageWriteData->data = new_data;
+
+        free(old_data);
     }
 
     for (i = 0; i < size; ++i) {
