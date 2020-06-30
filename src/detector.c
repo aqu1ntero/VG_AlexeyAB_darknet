@@ -152,6 +152,8 @@ void* dynamic_batch_consumer(void *arg) {
     }
     // CURL INIT END
 
+    pthread_cond_signal(&buffer->can_produce);
+
     while(1) {
         char *new_file = NULL;
 
@@ -175,6 +177,10 @@ void* dynamic_batch_consumer(void *arg) {
 
         image im = load_image(new_file, 0, 0, net.c);
         image sized;
+
+        if (im.w == 10 && im.h == 10) {
+            continue;
+        }
 
         if (buffer->letter_box) {
             sized = letterbox_image(im, net.w, net.h);
@@ -2092,6 +2098,10 @@ void dynamic_batch_detector(char *datacfg, char *cfgfile, char *weightfile, floa
         pthread_t cons;
 
         pthread_create(&cons, NULL, dynamic_batch_consumer, (void*)&dynamic_buffer);
+
+        pthread_mutex_lock(&dynamic_buffer.mutex);
+        pthread_cond_wait(&dynamic_buffer.can_produce, &dynamic_buffer.mutex);
+        pthread_mutex_unlock(&dynamic_buffer.mutex);
 
         int length, i = 0;
         int fd;
