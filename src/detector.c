@@ -142,8 +142,6 @@ void* dynamic_batch_consumer(void *arg) {
     pthread_cond_signal(&buffer->can_produce);
 
     while(1) {
-        char *new_file = NULL;
-
         // CURL INIT WORK
         curl = curl_easy_init();
 
@@ -166,17 +164,21 @@ void* dynamic_batch_consumer(void *arg) {
 
         // grab data
         --buffer->len;
-        new_file = buffer->buf[buffer->len];
-        printf("Consumed: %s\n", new_file);
+        char *in_file = buffer->buf[buffer->len];
 
-        image im = load_image(new_file, 0, 0, net.c);
+        char *new_file = (char *) malloc(sizeof(char) * (strlen(in_file) + 1));
 
-        remove(new_file);
-        free(new_file);
+        strcpy(new_file, in_file);
+
+        free(in_file);
 
         // signal the fact that new items may be produced
         pthread_cond_signal(&buffer->can_produce);
         pthread_mutex_unlock(&buffer->mutex);
+
+        printf("Consumed: %s\n", new_file);
+
+        image im = load_image(new_file, 0, 0, net.c);
 
         // Start object detection
         image sized;
@@ -299,6 +301,9 @@ void* dynamic_batch_consumer(void *arg) {
         free_detections(dets, nboxes);
         free_image(im);
         free_image(sized);
+
+        remove(new_file);
+        free(new_file);
     }
 
     // free memory
