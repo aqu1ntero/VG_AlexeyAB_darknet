@@ -128,6 +128,17 @@ void* dynamic_batch_consumer(void *arg) {
 
     curl_global_init(CURL_GLOBAL_ALL);
 
+    const char *auth_base = "Authorization: Token ";
+
+    struct curl_slist* headers = NULL;
+        
+    char *auth = (char*)malloc(strlen(auth_base) + strlen(buffer->api_token) + 1); // +1 for the null-terminator
+    
+    strcpy(auth, auth_base);
+    strcat(auth, buffer->api_token);
+
+    headers = curl_slist_append(headers, auth);
+
     pthread_cond_signal(&buffer->can_produce);
 
     while(1) {
@@ -136,26 +147,14 @@ void* dynamic_batch_consumer(void *arg) {
         // CURL INIT WORK
         curl = curl_easy_init();
 
-        if(curl) {
-            curl_easy_setopt(curl, CURLOPT_URL, buffer->api_uri);
-
-            struct curl_slist* headers = NULL;
-
-            const char *auth_base = "Authorization: Token ";
-            
-            char *auth = (char*)malloc(strlen(auth_base) + strlen(buffer->api_token) + 1); // +1 for the null-terminator
-            
-            strcpy(auth, auth_base);
-            strcat(auth, buffer->api_token);
-
-            headers = curl_slist_append(headers, auth);
-
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-        } else {
+        if(!curl) {
             printf("[E] Curl cant init");
             exit(-1);
         }
+
+        curl_easy_setopt(curl, CURLOPT_URL, buffer->api_uri);
+
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         // CURL INIT END
 
         pthread_mutex_lock(&buffer->mutex);
@@ -170,13 +169,16 @@ void* dynamic_batch_consumer(void *arg) {
         new_file = buffer->buf[buffer->len];
         printf("Consumed: %s\n", new_file);
 
+        image im = load_image(new_file, 0, 0, net.c);
+
+        remove(new_file);
+        free(new_file);
+
         // signal the fact that new items may be produced
         pthread_cond_signal(&buffer->can_produce);
         pthread_mutex_unlock(&buffer->mutex);
 
         // Start object detection
-
-        image im = load_image(new_file, 0, 0, net.c);
         image sized;
 
         if (im.w == 10 && im.h == 10) {
@@ -297,10 +299,6 @@ void* dynamic_batch_consumer(void *arg) {
         free_detections(dets, nboxes);
         free_image(im);
         free_image(sized);
-
-        remove(new_file);
-
-        free(new_file);
     }
 
     // free memory
