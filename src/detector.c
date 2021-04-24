@@ -56,6 +56,7 @@ typedef struct {
 
     char *api_uri;
     char *api_token;
+    char *in_folder;
 } buffer_dynamic_batch_t;
 
 typedef struct {
@@ -169,6 +170,21 @@ void* dynamic_batch_consumer(void *arg) {
 
         free(in_file);
 
+        // ---- Adrian add -----
+        char *tmp = (char *) malloc(sizeof(char) * (strlen(new_file) + 1));
+        strcpy(tmp, new_file);
+        char *camera_id = strtok(tmp, "_");
+        printf("Camera_id: %s\n", camera_id);
+        free(tmp);
+
+        char *path_new_file = (char*)malloc(strlen(new_file) + strlen(buffer->in_folder) + 1);
+        strcpy(path_new_file, buffer->in_folder);
+        strcat(path_new_file, new_file);
+        printf("Path complete in %s\n", path_new_file);
+        free(new_file);
+        new_file = path_new_file;
+        // ---- Adrian end -----
+
         // signal the fact that new items may be produced
         pthread_cond_signal(&buffer->can_produce);
         pthread_mutex_unlock(&buffer->mutex);
@@ -240,7 +256,7 @@ void* dynamic_batch_consumer(void *arg) {
 
         curl_formadd(&formpost, &lastptr,
             CURLFORM_COPYNAME, "camera",
-            CURLFORM_COPYCONTENTS, "1",
+            CURLFORM_COPYCONTENTS, camera_id,
             CURLFORM_END
         );
 
@@ -2086,7 +2102,8 @@ void dynamic_batch_detector(char *datacfg, char *cfgfile, char *weightfile, floa
         .hier_thresh = hier_thresh,
         .ext_output = ext_output,
         .api_uri = api_uri,
-        .api_token = api_token
+        .api_token = api_token,
+        .in_folder = in_folder
     };
     
     if(in_folder){
@@ -2136,7 +2153,7 @@ void dynamic_batch_detector(char *datacfg, char *cfgfile, char *weightfile, floa
 
                         printf("The file %s was copied.\n", event->name);
 
-                        char *file_name_event = concat(in_folder, event->name);
+                        char *file_name_event = concat("", event->name);
 
                         dynamic_buffer.buf[dynamic_buffer.len] = file_name_event;
                         ++dynamic_buffer.len;
