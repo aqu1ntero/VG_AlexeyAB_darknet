@@ -37,7 +37,9 @@ typedef __compar_fn_t comparison_fn_t;
 // ---- Luis Felipe add -----
 #define EVENT_SIZE  (sizeof(struct inotify_event))
 #define BUF_LEN     (1024 * (EVENT_SIZE + 16))
-#define BUF_DYNAMIC_BATCH_SIZE 100
+#define BUF_DYNAMIC_BATCH_SIZE 500
+// ---- Adrian add -----
+#define MIN_PROBABILITY 60
 
 typedef struct {
     char* buf[BUF_DYNAMIC_BATCH_SIZE];
@@ -174,13 +176,10 @@ void* dynamic_batch_consumer(void *arg) {
         char *tmp = (char *) malloc(sizeof(char) * (strlen(new_file) + 1));
         strcpy(tmp, new_file);
         char *camera_id = strtok(tmp, "_");
-        printf("Camera_id: %s\n", camera_id);
-        free(tmp);
 
         char *path_new_file = (char*)malloc(strlen(new_file) + strlen(buffer->in_folder) + 1);
         strcpy(path_new_file, buffer->in_folder);
         strcat(path_new_file, new_file);
-        printf("Path complete in %s\n", path_new_file);
         free(new_file);
         new_file = path_new_file;
         // ---- Adrian end -----
@@ -289,7 +288,16 @@ void* dynamic_batch_consumer(void *arg) {
 
             curl_easy_setopt(curl, CURLOPT_HTTPPOST, formpost);
 
-            res = curl_easy_perform(curl);
+
+            if (max_prob * 100 > MIN_PROBABILITY) {
+                printf("Camera_id: %s\n", camera_id);
+                time = get_time_point();
+                res = curl_easy_perform(curl);
+                printf("\nUploading file %s in %lf milli-seconds.\n", new_file, ((double)get_time_point() - time) / 1000);
+            }
+            else {
+               printf("\nIgnored to upload file %s\n", new_file);
+            }
 
             max_prob = -1;
             class_name = NULL;
@@ -316,6 +324,7 @@ void* dynamic_batch_consumer(void *arg) {
 
         remove(new_file);
         free(new_file);
+        free(tmp);
     }
 
     curl_easy_cleanup(curl);
